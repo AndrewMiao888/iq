@@ -1,0 +1,24 @@
+{
+  "name": "iq-lab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "test": "node --experimental-strip-types tests/scoring.test.ts"
+  },
+  "dependencies": {
+    "nuxt": "4.4.8",
+    "vue": "3.5.35"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vue-tsc": "3.3.11"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
