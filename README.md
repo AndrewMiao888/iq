@@ -34,3 +34,5 @@ Deploy the Nuxt output with a Node server using `node .output/server/index.mjs`,
 The included checks verify bank size, answer options, pixel-grid geometry, the quantitative answer key, scoring, and the production build. These engineering checks do not establish psychometric equivalence to a university or professionally administered IQ test; that requires representative norming, reliability and validity studies, item analysis, and review by qualified psychometricians.
 
 All answers and progress are stored only in the browser's local storage. No account, payment, or backend is required.
+
+During a test, you can flag questions and jump to the next unanswered or flagged item. The finish dialog shows both counts. Afterward, you can download a complete text report, copy a short summary, or print the result. The browser keeps summaries of the ten most recent attempts; reports and history never leave the device unless you choose to share them.

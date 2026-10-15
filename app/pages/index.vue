@@ -2,22 +2,31 @@
 import { sections, type SectionId } from '~/data/questions'
 import { isTestVersionId, questionsForVersion, testVersions, type TestVersionId } from '~/data/testVersions'
 import { calculateResult, formatTime, isCorrect, type Answers } from '~/utils/scoring'
+import { findNextQuestionIndex, formatResultReport, parseAttemptHistory, type AttemptSummary } from '~/utils/sessionFeatures'
 
 type Phase = 'intro' | 'test' | 'result'
-type SavedSession = { version: 3; phase: Phase; testVersionId: TestVersionId; startedAt: number; finishedAt: number | null; currentIndex: number; answers: Answers }
-type LegacySession = Omit<SavedSession, 'version' | 'testVersionId'> & { version: 2 }
-const STORAGE_KEY = 'iq-lab-session-v3'
+type SavedSession = { version: 4; phase: Phase; testVersionId: TestVersionId; startedAt: number; finishedAt: number | null; currentIndex: number; answers: Answers; flaggedIds: string[] }
+type LegacySession = Omit<SavedSession, 'version' | 'testVersionId' | 'flaggedIds'> & { version: 2 }
+type PreviousSession = Omit<SavedSession, 'version' | 'flaggedIds'> & { version: 3 }
+const STORAGE_KEY = 'iq-lab-session-v4'
+const HISTORY_KEY = 'iq-lab-history-v1'
 
 const phase = ref<Phase>('intro')
 const testVersionId = ref<TestVersionId>('100')
 const menuOpen = ref(false)
 const currentIndex = ref(0)
 const answers = ref<Answers>({})
+const flaggedIds = ref<string[]>([])
+const history = ref<AttemptSummary[]>([])
+const copyMessage = ref('')
+const storageStatus = ref<'saved' | 'unavailable'>('saved')
 const startedAt = ref<number | null>(null)
 const finishedAt = ref<number | null>(null)
 const now = ref(Date.now())
 const showFinishConfirm = ref(false)
 const openReview = ref<SectionId | null>(null)
+const finishCancelButton = ref<HTMLButtonElement | null>(null)
+let previousFocus: HTMLElement | null = null
 let ticker: ReturnType<typeof setInterval> | undefined
 
 const testVersion = computed(() => testVersions.find(version => version.id === testVersionId.value)!)
@@ -32,22 +41,41 @@ const remaining = computed(() => startedAt.value === null ? testVersion.value.du
 const result = computed(() => calculateResult(answers.value, startedAt.value === null ? 0 : ((finishedAt.value ?? now.value) - startedAt.value) / 1000, activeQuestions.value, testVersion.value.durationSeconds))
 const progress = computed(() => Math.round(100 * answeredCount.value / activeQuestions.value.length))
 const unanswered = computed(() => activeQuestions.value.length - answeredCount.value)
+const flaggedCount = computed(() => flaggedIds.value.length)
+
+function recordAttempt() {
+  if (startedAt.value === null || finishedAt.value === null) return
+  const entry: AttemptSummary = {
+    startedAt: startedAt.value,
+    finishedAt: finishedAt.value,
+    versionId: testVersionId.value,
+    correct: result.value.correct,
+    total: result.value.total,
+    weightedPercent: result.value.weightedPercent,
+    elapsedSeconds: result.value.elapsedSeconds
+  }
+  history.value = [entry, ...history.value.filter(item => item.startedAt !== entry.startedAt)].slice(0, 10)
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history.value)) } catch { /* Private mode can disable storage. */ }
+}
 
 function persist() {
   if (!import.meta.client || startedAt.value === null) return
-  const session: SavedSession = { version: 3, phase: phase.value, testVersionId: testVersionId.value, startedAt: startedAt.value, finishedAt: finishedAt.value, currentIndex: currentIndex.value, answers: answers.value }
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(session)) } catch { /* Storage can be unavailable in private mode. */ }
+  const session: SavedSession = { version: 4, phase: phase.value, testVersionId: testVersionId.value, startedAt: startedAt.value, finishedAt: finishedAt.value, currentIndex: currentIndex.value, answers: answers.value, flaggedIds: flaggedIds.value }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(session)); storageStatus.value = 'saved' }
+  catch { storageStatus.value = 'unavailable' }
 }
 
 function startTest() {
   menuOpen.value = false
   answers.value = {}
+  flaggedIds.value = []
   currentIndex.value = 0
   startedAt.value = Date.now()
   finishedAt.value = null
   now.value = startedAt.value
   phase.value = 'test'
   showFinishConfirm.value = false
+  copyMessage.value = ''
   openReview.value = null
   persist()
   scrollToTop()
@@ -58,6 +86,7 @@ function finishTest() {
   finishedAt.value = Math.min(Date.now(), (startedAt.value ?? Date.now()) + testVersion.value.durationSeconds * 1000)
   phase.value = 'result'
   showFinishConfirm.value = false
+  recordAttempt()
   persist()
   scrollToTop()
 }
@@ -69,6 +98,12 @@ function scrollToTop() {
 function goHome() {
   if (phase.value !== 'test') phase.value = 'intro'
   scrollToTop()
+}
+
+async function chooseAnotherVersion() {
+  goHome()
+  await nextTick()
+  document.getElementById('versions')?.scrollIntoView({ behavior: 'smooth' })
 }
 
 function setAnswer(value: string) {
@@ -91,36 +126,93 @@ function sectionAnswered(id: SectionId) {
   return activeQuestions.value.filter(item => item.section === id && (answers.value[item.id] ?? '').trim() !== '').length
 }
 
+function sectionFlagged(id: SectionId) {
+  return activeQuestions.value.filter(item => item.section === id && flaggedIds.value.includes(item.id)).length
+}
+
+function toggleFlag() {
+  if (phase.value !== 'test') return
+  const id = question.value.id
+  flaggedIds.value = flaggedIds.value.includes(id) ? flaggedIds.value.filter(item => item !== id) : [...flaggedIds.value, id]
+}
+
+function goToNextUnanswered() {
+  const index = findNextQuestionIndex(activeQuestions.value, currentIndex.value, item => !(answers.value[item.id] ?? '').trim())
+  if (index >= 0) { showFinishConfirm.value = false; goTo(index) }
+}
+
+function goToNextFlagged() {
+  const index = findNextQuestionIndex(activeQuestions.value, currentIndex.value, item => flaggedIds.value.includes(item.id))
+  if (index >= 0) { showFinishConfirm.value = false; goTo(index) }
+}
+
+function downloadReport() {
+  if (!import.meta.client || phase.value !== 'result') return
+  const content = formatResultReport(testVersion.value.name, result.value, activeQuestions.value, answers.value)
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `iq-lab-${testVersionId.value}-question-report.txt`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+async function copySummary() {
+  if (!import.meta.client || phase.value !== 'result') return
+  const summary = `IQ Lab ${testVersion.value.name}: ${result.value.correct}/${result.value.total} correct, ${result.value.weightedPercent}% weighted, ${formatTime(result.value.elapsedSeconds)} used. IQ-style index ${result.value.iqStyleIndex} (recreational estimate).`
+  try { await navigator.clipboard.writeText(summary); copyMessage.value = 'Summary copied.' }
+  catch { copyMessage.value = 'Copy unavailable in this browser.' }
+}
+
+function printResult() {
+  if (import.meta.client && phase.value === 'result') window.print()
+}
+
 function onKeydown(event: KeyboardEvent) {
-  if (showFinishConfirm.value && event.key === 'Escape') {
-    showFinishConfirm.value = false
+  if (showFinishConfirm.value) {
+    if (event.key === 'Escape') showFinishConfirm.value = false
+    if (event.key === 'Tab') {
+      const actions = document.querySelectorAll<HTMLButtonElement>('.finish-modal button:not(:disabled)')
+      const first = actions[0]
+      const last = actions[actions.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+    }
     return
   }
-  if (phase.value !== 'test' || showFinishConfirm.value || event.altKey || event.ctrlKey || event.metaKey) return
+  if (phase.value !== 'test' || event.altKey || event.ctrlKey || event.metaKey) return
   const target = event.target as HTMLElement
   if (['INPUT', 'TEXTAREA', 'BUTTON'].includes(target.tagName)) return
   if (question.value.kind === 'choice' && /^[1-4]$/.test(event.key)) setAnswer(question.value.options[Number(event.key) - 1] ?? '')
-  if (event.key === 'ArrowRight') goTo(currentIndex.value + 1)
-  if (event.key === 'ArrowLeft') goTo(currentIndex.value - 1)
+  if (event.key.toLowerCase() === 'f') toggleFlag()
+  if (event.key.toLowerCase() === 'u') goToNextUnanswered()
+  if (event.key.toLowerCase() === 'g') goToNextFlagged()
+  if (event.key === 'ArrowRight') { event.preventDefault(); goTo(currentIndex.value + 1) }
+  if (event.key === 'ArrowLeft') { event.preventDefault(); goTo(currentIndex.value - 1) }
 }
 
 onMounted(() => {
+  try { history.value = parseAttemptHistory(localStorage.getItem(HISTORY_KEY)) } catch { history.value = [] }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem('iq-lab-session-v2')
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem('iq-lab-session-v3') ?? localStorage.getItem('iq-lab-session-v2')
     if (raw) {
-      const saved = JSON.parse(raw) as SavedSession | LegacySession
-      if ((saved.version === 2 || (saved.version === 3 && isTestVersionId(saved.testVersionId))) && Number.isFinite(saved.startedAt) && ['intro', 'test', 'result'].includes(saved.phase) && saved.answers && typeof saved.answers === 'object') {
+      const saved = JSON.parse(raw) as SavedSession | PreviousSession | LegacySession
+      if ((saved.version === 2 || ((saved.version === 3 || saved.version === 4) && isTestVersionId(saved.testVersionId))) && Number.isFinite(saved.startedAt) && ['intro', 'test', 'result'].includes(saved.phase) && saved.answers && typeof saved.answers === 'object') {
         testVersionId.value = saved.version === 2 ? '100' : saved.testVersionId
         startedAt.value = saved.startedAt
         finishedAt.value = Number.isFinite(saved.finishedAt) ? saved.finishedAt : null
         currentIndex.value = Math.max(0, Math.min(activeQuestions.value.length - 1, Number(saved.currentIndex) || 0))
         answers.value = Object.fromEntries(Object.entries(saved.answers).filter(([id, value]) => activeQuestions.value.some(item => item.id === id) && typeof value === 'string'))
+        flaggedIds.value = saved.version === 4 && Array.isArray(saved.flaggedIds) ? [...new Set(saved.flaggedIds.filter(id => activeQuestions.value.some(item => item.id === id)))] : []
         phase.value = saved.phase
         if (phase.value === 'test' && Date.now() >= saved.startedAt + testVersion.value.durationSeconds * 1000) {
           finishedAt.value = saved.startedAt + testVersion.value.durationSeconds * 1000
           phase.value = 'result'
           persist()
         }
+        if (phase.value === 'result') recordAttempt()
       }
     }
   } catch { /* A bad saved session simply starts fresh. */ }
@@ -137,7 +229,17 @@ onBeforeUnmount(() => {
   if (import.meta.client) window.removeEventListener('keydown', onKeydown)
 })
 
-watch([phase, testVersionId, currentIndex, answers, startedAt, finishedAt], persist, { deep: true })
+watch([phase, testVersionId, currentIndex, answers, flaggedIds, startedAt, finishedAt], persist, { deep: true })
+watch(showFinishConfirm, async isOpen => {
+  if (isOpen) {
+    previousFocus = document.activeElement as HTMLElement | null
+    await nextTick()
+    finishCancelButton.value?.focus()
+  } else {
+    if (previousFocus?.isConnected) previousFocus.focus()
+    previousFocus = null
+  }
+})
 
 useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentIndex.value + 1} · IQ Lab` : phase.value === 'result' ? 'Your results · IQ Lab' : 'IQ Lab — Challenge your thinking') })
 </script>
@@ -204,6 +306,8 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
         <div class="version-action"><p><strong>{{ testVersion.name }} selected</strong> · {{ testVersion.note }} · {{ testVersion.durationSeconds / 60 }} minutes</p><button class="primary-button" type="button" @click="startTest()">Start {{ testVersion.id }}-question test <span aria-hidden="true">↗</span></button></div>
       </section>
 
+      <section v-if="history.length" class="history-section wrap" aria-label="Recent attempts"><div class="history-heading"><div><span class="eyebrow">YOUR BROWSER</span><h2>Recent attempts.</h2></div><p>Saved only on this device.</p></div><div class="history-list"><div v-for="attempt in history.slice(0, 5)" :key="attempt.startedAt" class="history-item"><strong>{{ attempt.versionId }} questions</strong><span>{{ attempt.correct }}/{{ attempt.total }} correct</span><span>{{ attempt.weightedPercent }}% weighted</span><time :datetime="new Date(attempt.finishedAt).toISOString()">{{ new Date(attempt.finishedAt).toLocaleDateString() }}</time></div></div></section>
+
       <section id="domains" class="domains-section wrap">
         <div class="section-heading"><div><span class="eyebrow">THE TEST</span><h2>Five parts.<br>One clear picture.</h2></div><p>Every format draws from the same five domains, from straightforward warm-ups to tougher challenges.</p></div>
         <div class="domain-grid">
@@ -224,12 +328,13 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
     </main>
 
     <main v-else-if="phase === 'test'" class="test-main wrap">
-      <div class="test-overview"><div><span class="eyebrow"><span class="eyebrow-dot" /> {{ testVersion.name.toUpperCase() }} CHALLENGE · {{ testVersion.id }} QUESTIONS</span><h1>Stay in the flow.</h1></div><div class="timer" :class="{ urgent: remaining < 300 }"><span>TIME LEFT</span><strong>{{ formatTime(remaining) }}</strong></div></div>
-      <div class="progress-panel"><div class="progress-label"><span>{{ answeredCount }} / {{ activeQuestions.length }} answered</span><span>{{ progress }}%</span></div><div class="progress-track"><div :style="{ width: `${progress}%` }" /></div></div>
-      <nav class="section-nav" aria-label="Test sections"><button v-for="(section, index) in sections" :key="section.id" type="button" :class="{ active: question.section === section.id }" @click="goToSection(section.id)"><span>{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ section.name }}</strong><small>{{ sectionAnswered(section.id) }}/{{ perSection }}</small></button></nav>
-      <div class="test-content"><div class="question-map"><div class="map-heading"><span>PART {{ String(currentPartIndex + 1).padStart(2, '0') }} / {{ currentSection.name.toUpperCase() }}</span><span>JUMP TO QUESTION</span></div><div class="question-grid" :class="`count-${perSection}`"><button v-for="(item, index) in partQuestions" :key="item.id" type="button" :aria-label="`Question ${currentPartIndex * perSection + index + 1}${answers[item.id] ? ', answered' : ''}`" :aria-current="item.id === question.id ? 'step' : undefined" :class="{ current: item.id === question.id, answered: !!answers[item.id] }" @click="goTo(currentPartIndex * perSection + index)">{{ index + 1 }}</button></div></div>
+      <div class="test-overview"><div><span class="eyebrow"><span class="eyebrow-dot" /> {{ testVersion.name.toUpperCase() }} CHALLENGE · {{ testVersion.id }} QUESTIONS</span><h1>Stay in the flow.</h1></div><div class="timer" role="timer" :aria-label="`${formatTime(remaining)} remaining`" :class="{ urgent: remaining < 300 }"><span>TIME LEFT</span><strong>{{ formatTime(remaining) }}</strong></div></div>
+      <div class="progress-panel"><div class="progress-label"><span>{{ answeredCount }} / {{ activeQuestions.length }} answered</span><span>{{ progress }}% · {{ storageStatus === 'saved' ? 'Saved in this browser' : 'Local saving unavailable' }}</span></div><div class="progress-track"><div :style="{ width: `${progress}%` }" /></div></div>
+      <nav class="section-nav" aria-label="Test sections"><button v-for="(section, index) in sections" :key="section.id" type="button" :class="{ active: question.section === section.id }" @click="goToSection(section.id)"><span>{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ section.name }}</strong><small>{{ sectionAnswered(section.id) }}/{{ perSection }}<span v-if="sectionFlagged(section.id)"> · {{ sectionFlagged(section.id) }} flagged</span></small></button></nav>
+      <div class="test-content"><div class="question-map"><div class="map-heading"><span>PART {{ String(currentPartIndex + 1).padStart(2, '0') }} / {{ currentSection.name.toUpperCase() }}</span><span>JUMP TO QUESTION</span></div><div class="question-grid" :class="`count-${perSection}`"><button v-for="(item, index) in partQuestions" :key="item.id" type="button" :aria-label="`Question ${currentPartIndex * perSection + index + 1}${answers[item.id] ? ', answered' : ''}${flaggedIds.includes(item.id) ? ', flagged' : ''}`" :aria-current="item.id === question.id ? 'step' : undefined" :class="{ current: item.id === question.id, answered: !!answers[item.id], flagged: flaggedIds.includes(item.id) }" @click="goTo(currentPartIndex * perSection + index)">{{ index + 1 }}</button></div><div class="review-queue"><span>{{ unanswered }} unanswered · {{ flaggedCount }} flagged</span><button type="button" :disabled="unanswered === 0" @click="goToNextUnanswered">Next unanswered</button><button type="button" :disabled="flaggedCount === 0" @click="goToNextFlagged">Next flagged</button></div></div>
         <section class="question-card" :key="question.id" aria-label="Current question">
           <div class="question-meta"><span>QUESTION {{ String(currentIndex + 1).padStart(2, '0') }} / {{ activeQuestions.length }}</span><span>{{ ['','FOUNDATION','INTERMEDIATE','ADVANCED'][question.difficulty] }}</span></div>
+          <button type="button" class="flag-button" :class="{ flagged: flaggedIds.includes(question.id) }" :aria-pressed="flaggedIds.includes(question.id)" @click="toggleFlag">{{ flaggedIds.includes(question.id) ? 'Flagged for review' : 'Flag for review' }}</button>
           <div class="question-kicker">{{ currentSection.name }} / {{ currentSection.kicker }}</div>
           <h2>{{ question.prompt }}</h2>
           <div v-if="question.math" class="math-expression" v-html="question.math" />
@@ -252,7 +357,7 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
           </div>
           <label v-else class="number-answer"><span>YOUR ANSWER</span><input :value="answers[question.id] ?? ''" type="text" inputmode="decimal" autocomplete="off" placeholder="Type a number" @input="setAnswer(($event.target as HTMLInputElement).value)"><small>Decimals are accepted where relevant.</small></label>
           <div class="question-actions"><button v-if="answers[question.id]" type="button" @click="setAnswer('')">Clear answer</button><span v-else>Choose an answer to mark this question complete.</span></div>
-          <div class="question-footer"><button class="secondary-button" type="button" :disabled="currentIndex === 0" @click="goTo(currentIndex - 1)">← &nbsp; Previous</button><span>Press 1–4 to choose · ← → to navigate</span><button class="primary-button" type="button" @click="currentIndex === activeQuestions.length - 1 ? showFinishConfirm = true : goTo(currentIndex + 1)">{{ currentIndex === activeQuestions.length - 1 ? 'View results' : 'Next question' }} <span aria-hidden="true">→</span></button></div>
+          <div class="question-footer"><button class="secondary-button" type="button" :disabled="currentIndex === 0" @click="goTo(currentIndex - 1)">← &nbsp; Previous</button><span>1–4 choose · arrows navigate · F flag · U unanswered · G flagged</span><button class="primary-button" type="button" @click="currentIndex === activeQuestions.length - 1 ? showFinishConfirm = true : goTo(currentIndex + 1)">{{ currentIndex === activeQuestions.length - 1 ? 'View results' : 'Next question' }} <span aria-hidden="true">→</span></button></div>
         </section>
       </div>
     </main>
@@ -261,9 +366,10 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
       <div class="results-hero"><div class="result-score"><span>YOUR IQ-STYLE INDEX</span><strong>{{ result.iqStyleIndex }}</strong><p>Recreational estimate for this {{ testVersion.id }}-question version, not a clinical IQ score.</p></div><div class="result-summary"><span class="eyebrow">YOUR PERFORMANCE</span><h2>{{ result.weightedPercent >= 80 ? 'Exceptional focus.' : result.weightedPercent >= 60 ? 'Strong thinking.' : result.weightedPercent >= 40 ? 'Keep exploring.' : 'Every mind grows.' }}</h2><p>You answered <strong>{{ result.correct }} of {{ result.total }}</strong> questions correctly. Harder questions carried more weight; unanswered questions counted as incorrect.</p><div class="summary-stats"><div><strong>{{ result.weightedPercent }}%</strong><span>weighted score</span></div><div><strong>{{ result.answered }}/{{ result.total }}</strong><span>attempted</span></div><div><strong>{{ formatTime(result.elapsedSeconds) }}</strong><span>time used</span></div></div></div></div>
       <div class="results-columns"><section class="breakdown-card"><span class="eyebrow">THE BREAKDOWN</span><h2>Five dimensions.</h2><div v-for="section in result.sections" :key="section.id" class="breakdown-row"><div class="breakdown-label"><strong>{{ section.name }}</strong><span>{{ section.correct }}/{{ section.total }}</span></div><div class="breakdown-track"><div :style="{ width: `${section.percent}%` }" /></div><b>{{ section.percent }}%</b></div></section><section class="method-card"><span class="eyebrow">THE METHOD</span><h2>What the number means.</h2><p>Correct answers earn 1, 1.5, or 2 points according to difficulty. The weighted score is points earned divided by points available.</p><p>The IQ-style index adjusts for guessing on multiple-choice questions, then maps the result to a 65–145 display scale. Time does not change the score.</p><div class="method-warning">This test has no population norms or validation study. It cannot measure clinical IQ or reliably compare you with other people. Scores from different test lengths are not equivalent.</div></section></div>
       <section class="review-section"><div class="review-heading"><div><span class="eyebrow">GO DEEPER</span><h2>Review your answers.</h2></div><p>Open a part to see your answers and the reasoning behind each question.</p></div><div class="review-list"><div v-for="section in sections" :key="section.id" class="review-part"><button type="button" class="review-toggle" :aria-expanded="openReview === section.id" @click="openReview = openReview === section.id ? null : section.id"><span>{{ section.glyph }}</span><strong>{{ section.name }}</strong><small>{{ result.sections.find(item => item.id === section.id)?.correct }}/{{ perSection }} correct</small><b>{{ openReview === section.id ? '−' : '+' }}</b></button><div v-if="openReview === section.id" class="review-questions"><div v-for="(item, index) in activeQuestions.filter(q => q.section === section.id)" :key="item.id" class="review-question"><span>{{ String(index + 1).padStart(2, '0') }}</span><div><h3>{{ item.prompt }} <span v-if="item.visual">{{ item.visual.join('  ') }}</span></h3><div v-if="item.math" class="review-math" v-html="item.math" /><div v-if="item.pixel" class="review-pixels" :style="{ '--panel-columns': item.pixel.columns }"><div v-for="(panel, panelIndex) in item.pixel.panels" :key="panelIndex" class="pixel-panel"><strong v-if="panel === '?'">?</strong><PixelGrid v-else :grid="panel" /></div></div><p :class="isCorrect(item, answers[item.id]) ? 'answer-right' : 'answer-wrong'">Your answer: {{ answers[item.id] || 'Not answered' }} {{ isCorrect(item, answers[item.id]) ? '✓' : '×' }}</p><p v-if="!isCorrect(item, answers[item.id])">Correct answer: <strong>{{ item.answer }}</strong></p><div v-if="item.pixel" class="review-solution"><span>Correct tile</span><PixelGrid :grid="item.pixel.optionGrids[item.options.indexOf(item.answer)]!" /></div><small>{{ item.explanation }}</small></div></div></div></div></div></section><div class="result-actions"><button class="primary-button" type="button" @click="startTest()">Retake the {{ testVersion.name.toLowerCase() }} test <span aria-hidden="true">↗</span></button><span>Your latest attempt is saved in this browser.</span></div>
+      <div class="result-tools" aria-label="Result actions"><button type="button" @click="downloadReport">Download full report</button><button type="button" @click="copySummary">Copy summary</button><button type="button" @click="printResult">Print result</button><button type="button" @click="chooseAnotherVersion">Choose another length</button><span role="status" aria-live="polite">{{ copyMessage }}</span></div>
     </main>
 
     <footer class="site-footer wrap"><div class="footer-brand"><img src="/mark.svg" alt="" width="28" height="28"><strong>IQ LAB</strong></div><p>Founded by Andrew Miao, the creator of SynQuara Digital</p><a href="mailto:support@150416.xyz">support@150416.xyz</a><span>© {{ new Date().getFullYear() }} IQ LAB</span></footer>
-    <div v-if="showFinishConfirm" class="modal-backdrop" role="presentation" @click.self="showFinishConfirm = false"><div class="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-title"><span class="eyebrow">ONE LAST THING</span><h2 id="finish-title">Finish your test?</h2><p>You’ve answered <strong>{{ answeredCount }} of {{ activeQuestions.length }}</strong> questions. {{ unanswered ? `${unanswered} unanswered questions will count as incorrect.` : 'Every question has an answer.' }}</p><div class="modal-actions"><button class="secondary-button" type="button" @click="showFinishConfirm = false">Keep going</button><button class="primary-button" type="button" @click="finishTest">See my results <span aria-hidden="true">↗</span></button></div></div></div>
+    <div v-if="showFinishConfirm" class="modal-backdrop" role="presentation" @click.self="showFinishConfirm = false"><div class="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-title"><span class="eyebrow">REVIEW YOUR SESSION</span><h2 id="finish-title">Finish your test?</h2><p>You’ve answered <strong>{{ answeredCount }} of {{ activeQuestions.length }}</strong> questions. {{ unanswered ? `${unanswered} unanswered questions will count as incorrect.` : 'Every question has an answer.' }} {{ flaggedCount ? `${flaggedCount} questions are flagged for review.` : '' }}</p><div class="modal-actions"><button ref="finishCancelButton" class="secondary-button" type="button" @click="showFinishConfirm = false">Keep going</button><button v-if="unanswered" class="secondary-button" type="button" @click="goToNextUnanswered">Review unanswered</button><button v-if="flaggedCount" class="secondary-button" type="button" @click="goToNextFlagged">Review flagged</button><button class="primary-button" type="button" @click="finishTest">See my results <span aria-hidden="true">↗</span></button></div></div></div>
   </div>
 </template>

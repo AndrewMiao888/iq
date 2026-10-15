@@ -3,6 +3,7 @@ import test from 'node:test'
 import { questions, sections, rotateGrid, reflectGrid, overlayGrids, xorGrids } from '../app/data/questions.ts'
 import { isTestVersionId, questionsForVersion, testVersions } from '../app/data/testVersions.ts'
 import { calculateResult, formatTime, isCorrect, TEST_DURATION_SECONDS } from '../app/utils/scoring.ts'
+import { findNextQuestionIndex, formatResultReport, mathMarkupToText, parseAttemptHistory } from '../app/utils/sessionFeatures.ts'
 
 test('the bank contains 100 distinct, answerable questions in five equal parts', () => {
   assert.equal(questions.length, 100)
@@ -162,4 +163,40 @@ test('short-version scoring ignores questions outside the selected version', () 
       assert.equal(outsiderOnly.iqStyleIndex, 65)
     }
   }
+})
+
+test('review navigation wraps and skips questions that do not match', () => {
+  const selected = questionsForVersion('20')
+  assert.equal(findNextQuestionIndex(selected, 0, item => item.id === selected[3]!.id), 3)
+  assert.equal(findNextQuestionIndex(selected, 19, item => item.id === selected[2]!.id), 2)
+  assert.equal(findNextQuestionIndex(selected, 0, () => false), -1)
+})
+
+test('attempt history rejects malformed entries and keeps the latest ten', () => {
+  assert.deepEqual(parseAttemptHistory('bad json'), [])
+  const valid = { startedAt: 1, finishedAt: 2, versionId: '20', correct: 12, total: 20, weightedPercent: 60, elapsedSeconds: 500 }
+  assert.deepEqual(parseAttemptHistory(JSON.stringify([valid, { ...valid, versionId: '30' }, null])), [valid])
+  assert.equal(parseAttemptHistory(JSON.stringify(Array.from({ length: 12 }, (_, index) => ({ ...valid, startedAt: index + 1 })))).length, 10)
+})
+
+test('download report includes only the selected version and its explanations', () => {
+  const selected = questionsForVersion('20')
+  const first = selected[0]!
+  const answers = { [first.id]: first.answer }
+  const result = calculateResult(answers, 420, selected, 900)
+  const report = formatResultReport('Quick', result, selected, answers)
+  assert.match(report, /IQ Lab — Quick result/)
+  assert.match(report, /Correct: 1\/20/)
+  assert.ok(report.includes(first.explanation))
+  assert.equal((report.match(/Explanation:/g) ?? []).length, 20)
+  assert.match(report, /Math:/)
+  assert.match(report, /Pixel tiles/)
+  assert.ok(!report.includes('Correct: 1/100'))
+})
+
+test('MathML in the report preserves fractions and exponents', () => {
+  const squared = questions.find(question => question.id === 'numbers-01')!
+  const fraction = questions.find(question => question.id === 'numbers-03')!
+  assert.equal(mathMarkupToText(squared.math!), '2^5−3^2')
+  assert.equal(mathMarkupToText(fraction.math!), '(3x−5)/(2)=11')
 })
