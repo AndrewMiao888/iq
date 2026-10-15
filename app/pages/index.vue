@@ -3,8 +3,8 @@ import { questions, sections, type SectionId } from '~/data/questions'
 import { calculateResult, formatTime, isCorrect, TEST_DURATION_SECONDS, type Answers } from '~/utils/scoring'
 
 type Phase = 'intro' | 'test' | 'result'
-type SavedSession = { version: 1; phase: Phase; startedAt: number; finishedAt: number | null; currentIndex: number; answers: Answers }
-const STORAGE_KEY = 'iq-lab-session-v1'
+type SavedSession = { version: 2; phase: Phase; startedAt: number; finishedAt: number | null; currentIndex: number; answers: Answers }
+const STORAGE_KEY = 'iq-lab-session-v2'
 
 const phase = ref<Phase>('intro')
 const currentIndex = ref(0)
@@ -28,7 +28,7 @@ const unanswered = computed(() => questions.length - answeredCount.value)
 
 function persist() {
   if (!import.meta.client || startedAt.value === null) return
-  const session: SavedSession = { version: 1, phase: phase.value, startedAt: startedAt.value, finishedAt: finishedAt.value, currentIndex: currentIndex.value, answers: answers.value }
+  const session: SavedSession = { version: 2, phase: phase.value, startedAt: startedAt.value, finishedAt: finishedAt.value, currentIndex: currentIndex.value, answers: answers.value }
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(session)) } catch { /* Storage can be unavailable in private mode. */ }
 }
 
@@ -101,7 +101,7 @@ onMounted(() => {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const saved = JSON.parse(raw) as SavedSession
-      if (saved.version === 1 && Number.isFinite(saved.startedAt) && ['intro', 'test', 'result'].includes(saved.phase) && saved.answers && typeof saved.answers === 'object') {
+      if (saved.version === 2 && Number.isFinite(saved.startedAt) && ['intro', 'test', 'result'].includes(saved.phase) && saved.answers && typeof saved.answers === 'object') {
         startedAt.value = saved.startedAt
         finishedAt.value = Number.isFinite(saved.finishedAt) ? saved.finishedAt : null
         currentIndex.value = Math.max(0, Math.min(questions.length - 1, Number(saved.currentIndex) || 0))
@@ -137,8 +137,8 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
   <div class="site-shell">
     <header class="site-header wrap">
       <button class="brand" type="button" aria-label="IQ Lab" @click="goHome">
-        <span class="brand-symbol">iQ<span>.</span></span>
-        <span class="brand-caption">THE THINKING TEST</span>
+        <img class="brand-mark" src="/mark.svg" alt="" width="40" height="40">
+        <span class="brand-lockup"><strong>IQ LAB</strong><small>THE THINKING TEST</small></span>
       </button>
       <nav v-if="phase === 'intro'" class="header-nav" aria-label="Main navigation">
         <a href="#domains">The five parts</a>
@@ -166,6 +166,7 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
         <div class="hero-display" aria-label="100 questions across five parts">
           <div class="display-top"><span>IQ LAB / 001</span><span>01 — 05</span></div>
           <div class="display-number">100<span>↗</span></div>
+          <div class="hero-pixel" aria-hidden="true"><PixelGrid grid=".###./#...#/#.#.#/#...#/.####" /></div>
           <div class="display-bottom"><strong>QUESTIONS</strong><span>ONE CURIOUS MIND.<br>FIVE WAYS TO THINK.</span></div>
           <div class="display-lines" aria-hidden="true"><i /><i /><i /><i /><i /></div>
         </div>
@@ -201,9 +202,28 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
       <div class="progress-panel"><div class="progress-label"><span>{{ answeredCount }} / 100 answered</span><span>{{ progress }}%</span></div><div class="progress-track"><div :style="{ width: `${progress}%` }" /></div></div>
       <nav class="section-nav" aria-label="Test sections"><button v-for="(section, index) in sections" :key="section.id" type="button" :class="{ active: question.section === section.id }" @click="goToSection(section.id)"><span>{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ section.name }}</strong><small>{{ sectionAnswered(section.id) }}/20</small></button></nav>
       <div class="test-content"><div class="question-map"><div class="map-heading"><span>PART {{ String(currentPartIndex + 1).padStart(2, '0') }} / {{ currentSection.name.toUpperCase() }}</span><span>JUMP TO QUESTION</span></div><div class="question-grid"><button v-for="(item, index) in partQuestions" :key="item.id" type="button" :aria-label="`Question ${currentPartIndex * 20 + index + 1}${answers[item.id] ? ', answered' : ''}`" :aria-current="item.id === question.id ? 'step' : undefined" :class="{ current: item.id === question.id, answered: !!answers[item.id] }" @click="goTo(currentPartIndex * 20 + index)">{{ index + 1 }}</button></div></div>
-        <section class="question-card" :key="question.id" aria-label="Current question"><div class="question-meta"><span>QUESTION {{ String(currentIndex + 1).padStart(2, '0') }} / 100</span><span>{{ ['','FOUNDATION','INTERMEDIATE','ADVANCED'][question.difficulty] }}</span></div><div class="question-kicker">{{ currentSection.glyph }} &nbsp; {{ currentSection.name }}</div><h2>{{ question.prompt }}</h2>
+        <section class="question-card" :key="question.id" aria-label="Current question">
+          <div class="question-meta"><span>QUESTION {{ String(currentIndex + 1).padStart(2, '0') }} / 100</span><span>{{ ['','FOUNDATION','INTERMEDIATE','ADVANCED'][question.difficulty] }}</span></div>
+          <div class="question-kicker">{{ currentSection.name }} / {{ currentSection.kicker }}</div>
+          <h2>{{ question.prompt }}</h2>
+          <div v-if="question.math" class="math-expression" v-html="question.math" />
           <div v-if="question.visual" class="visual-sequence" role="img" :aria-label="`Pattern: ${question.visual.join(', ')}`"><span v-for="(token, index) in question.visual" :key="index" :class="{ mystery: token === '?' }">{{ token }}</span></div>
-          <div v-if="question.kind === 'choice'" class="choices" role="group" :aria-label="`Answers for question ${currentIndex + 1}`"><button v-for="(option, index) in question.options" :key="index" type="button" class="choice" :class="{ selected: answers[question.id] === option }" :aria-pressed="answers[question.id] === option" @click="setAnswer(option)"><span class="choice-letter">{{ String.fromCharCode(65 + index) }}</span><span>{{ option }}</span><span class="choice-indicator">{{ answers[question.id] === option ? '✓' : '↗' }}</span></button></div>
+          <div v-if="question.pixel" class="pixel-panels" :style="{ '--panel-columns': question.pixel.columns }" aria-label="Pixel reasoning tiles">
+            <div v-for="(panel, index) in question.pixel.panels" :key="index" class="pixel-panel" :class="{ missing: panel === '?' }">
+              <span class="pixel-panel-label">{{ String(index + 1).padStart(2, '0') }}</span>
+              <strong v-if="panel === '?'" aria-label="Missing tile">?</strong>
+              <PixelGrid v-else :grid="panel" />
+            </div>
+          </div>
+          <div v-if="question.kind === 'choice'" class="choices" :class="{ 'pixel-choices': question.pixel }" role="group" :aria-label="`Answers for question ${currentIndex + 1}`">
+            <button v-for="(option, index) in question.options" :key="index" type="button" class="choice" :class="{ selected: answers[question.id] === option }" :aria-pressed="answers[question.id] === option" @click="setAnswer(option)">
+              <span class="choice-letter">{{ String.fromCharCode(65 + index) }}</span>
+              <PixelGrid v-if="question.pixel" :grid="question.pixel.optionGrids[index]!" />
+              <span v-else-if="question.optionMath?.[index]" class="choice-math" v-html="question.optionMath[index]" />
+              <span v-else>{{ option }}</span>
+              <span class="choice-indicator" aria-hidden="true">{{ answers[question.id] === option ? '●' : '○' }}</span>
+            </button>
+          </div>
           <label v-else class="number-answer"><span>YOUR ANSWER</span><input :value="answers[question.id] ?? ''" type="text" inputmode="decimal" autocomplete="off" placeholder="Type a number" @input="setAnswer(($event.target as HTMLInputElement).value)"><small>Decimals are accepted where relevant.</small></label>
           <div class="question-actions"><button v-if="answers[question.id]" type="button" @click="setAnswer('')">Clear answer</button><span v-else>Choose an answer to mark this question complete.</span></div>
           <div class="question-footer"><button class="secondary-button" type="button" :disabled="currentIndex === 0" @click="goTo(currentIndex - 1)">← &nbsp; Previous</button><span>Press 1–4 to choose · ← → to navigate</span><button class="primary-button" type="button" @click="currentIndex === 99 ? showFinishConfirm = true : goTo(currentIndex + 1)">{{ currentIndex === 99 ? 'View results' : 'Next question' }} <span aria-hidden="true">→</span></button></div>
@@ -214,10 +234,10 @@ useHead({ title: computed(() => phase.value === 'test' ? `Question ${currentInde
     <main v-else class="results-main wrap"><div class="result-heading"><span class="eyebrow"><span class="eyebrow-dot" /> SESSION COMPLETE</span><h1>Your mind,<br><em>in numbers.</em></h1><p>A snapshot of how you performed across five different kinds of thinking.</p></div>
       <div class="results-hero"><div class="result-score"><span>YOUR IQ-STYLE INDEX</span><strong>{{ result.iqStyleIndex }}</strong><p>Recreational estimate, not a clinical IQ score.</p></div><div class="result-summary"><span class="eyebrow">YOUR PERFORMANCE</span><h2>{{ result.weightedPercent >= 80 ? 'Exceptional focus.' : result.weightedPercent >= 60 ? 'Strong thinking.' : result.weightedPercent >= 40 ? 'Keep exploring.' : 'Every mind grows.' }}</h2><p>You answered <strong>{{ result.correct }} of 100</strong> questions correctly. Harder questions carried more weight; unanswered questions counted as incorrect.</p><div class="summary-stats"><div><strong>{{ result.weightedPercent }}%</strong><span>weighted score</span></div><div><strong>{{ result.answered }}/100</strong><span>attempted</span></div><div><strong>{{ formatTime(result.elapsedSeconds) }}</strong><span>time used</span></div></div></div></div>
       <div class="results-columns"><section class="breakdown-card"><span class="eyebrow">THE BREAKDOWN</span><h2>Five dimensions.</h2><div v-for="section in result.sections" :key="section.id" class="breakdown-row"><div class="breakdown-label"><strong>{{ section.name }}</strong><span>{{ section.correct }}/20</span></div><div class="breakdown-track"><div :style="{ width: `${section.percent}%` }" /></div><b>{{ section.percent }}%</b></div></section><section class="method-card"><span class="eyebrow">THE METHOD</span><h2>What the number means.</h2><p>Correct answers earn 1, 1.5, or 2 points according to difficulty. The weighted score is points earned divided by points available.</p><p>The IQ-style index adjusts for guessing on multiple-choice questions, then maps the result to a 65–145 display scale. Time does not change the score.</p><div class="method-warning">This test has no population norms or validation study. It cannot measure clinical IQ or reliably compare you with other people.</div></section></div>
-      <section class="review-section"><div class="review-heading"><div><span class="eyebrow">GO DEEPER</span><h2>Review your answers.</h2></div><p>Open a part to see your answers and the reasoning behind each question.</p></div><div class="review-list"><div v-for="section in sections" :key="section.id" class="review-part"><button type="button" class="review-toggle" :aria-expanded="openReview === section.id" @click="openReview = openReview === section.id ? null : section.id"><span>{{ section.glyph }}</span><strong>{{ section.name }}</strong><small>{{ result.sections.find(item => item.id === section.id)?.correct }}/20 correct</small><b>{{ openReview === section.id ? '−' : '+' }}</b></button><div v-if="openReview === section.id" class="review-questions"><div v-for="(item, index) in questions.filter(q => q.section === section.id)" :key="item.id" class="review-question"><span>{{ String(index + 1).padStart(2, '0') }}</span><div><h3>{{ item.prompt }} <span v-if="item.visual">{{ item.visual.join('  ') }}</span></h3><p :class="isCorrect(item, answers[item.id]) ? 'answer-right' : 'answer-wrong'">Your answer: {{ answers[item.id] || 'Not answered' }} {{ isCorrect(item, answers[item.id]) ? '✓' : '×' }}</p><p v-if="!isCorrect(item, answers[item.id])">Correct answer: <strong>{{ item.answer }}</strong></p><small>{{ item.explanation }}</small></div></div></div></div></div></section><div class="result-actions"><button class="primary-button" type="button" @click="startTest">Try a new round <span aria-hidden="true">↗</span></button><span>Your latest attempt is saved in this browser.</span></div>
+      <section class="review-section"><div class="review-heading"><div><span class="eyebrow">GO DEEPER</span><h2>Review your answers.</h2></div><p>Open a part to see your answers and the reasoning behind each question.</p></div><div class="review-list"><div v-for="section in sections" :key="section.id" class="review-part"><button type="button" class="review-toggle" :aria-expanded="openReview === section.id" @click="openReview = openReview === section.id ? null : section.id"><span>{{ section.glyph }}</span><strong>{{ section.name }}</strong><small>{{ result.sections.find(item => item.id === section.id)?.correct }}/20 correct</small><b>{{ openReview === section.id ? '−' : '+' }}</b></button><div v-if="openReview === section.id" class="review-questions"><div v-for="(item, index) in questions.filter(q => q.section === section.id)" :key="item.id" class="review-question"><span>{{ String(index + 1).padStart(2, '0') }}</span><div><h3>{{ item.prompt }} <span v-if="item.visual">{{ item.visual.join('  ') }}</span></h3><div v-if="item.math" class="review-math" v-html="item.math" /><div v-if="item.pixel" class="review-pixels" :style="{ '--panel-columns': item.pixel.columns }"><div v-for="(panel, panelIndex) in item.pixel.panels" :key="panelIndex" class="pixel-panel"><strong v-if="panel === '?'">?</strong><PixelGrid v-else :grid="panel" /></div></div><p :class="isCorrect(item, answers[item.id]) ? 'answer-right' : 'answer-wrong'">Your answer: {{ answers[item.id] || 'Not answered' }} {{ isCorrect(item, answers[item.id]) ? '✓' : '×' }}</p><p v-if="!isCorrect(item, answers[item.id])">Correct answer: <strong>{{ item.answer }}</strong></p><div v-if="item.pixel" class="review-solution"><span>Correct tile</span><PixelGrid :grid="item.pixel.optionGrids[item.options.indexOf(item.answer)]!" /></div><small>{{ item.explanation }}</small></div></div></div></div></div></section><div class="result-actions"><button class="primary-button" type="button" @click="startTest">Retake the test <span aria-hidden="true">↗</span></button><span>Your latest attempt is saved in this browser.</span></div>
     </main>
 
-    <footer class="site-footer wrap"><div class="footer-brand">iQ<span>.</span> <small>THE THINKING TEST</small></div><p>Founded by Andrew Miao, the creator of SynQuara Digital</p><span>© {{ new Date().getFullYear() }} IQ LAB</span></footer>
+    <footer class="site-footer wrap"><div class="footer-brand"><img src="/mark.svg" alt="" width="28" height="28"><strong>IQ LAB</strong></div><p>Founded by Andrew Miao, the creator of SynQuara Digital</p><span>© {{ new Date().getFullYear() }} IQ LAB</span></footer>
     <div v-if="showFinishConfirm" class="modal-backdrop" role="presentation" @click.self="showFinishConfirm = false"><div class="finish-modal" role="dialog" aria-modal="true" aria-labelledby="finish-title"><span class="eyebrow">ONE LAST THING</span><h2 id="finish-title">Finish your test?</h2><p>You’ve answered <strong>{{ answeredCount }} of 100</strong> questions. {{ unanswered ? `${unanswered} unanswered questions will count as incorrect.` : 'Every question has an answer.' }}</p><div class="modal-actions"><button class="secondary-button" type="button" @click="showFinishConfirm = false">Keep going</button><button class="primary-button" type="button" @click="finishTest">See my results <span aria-hidden="true">↗</span></button></div></div></div>
   </div>
 </template>

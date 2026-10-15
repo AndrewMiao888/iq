@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { questions, sections } from '../app/data/questions.ts'
+import { questions, sections, rotateGrid, reflectGrid, overlayGrids, xorGrids } from '../app/data/questions.ts'
 import { calculateResult, formatTime, isCorrect, TEST_DURATION_SECONDS } from '../app/utils/scoring.ts'
 
 test('the bank contains 100 distinct, answerable questions in five equal parts', () => {
@@ -67,4 +67,59 @@ test('advanced questions carry more weight while time cannot change the score', 
   assert.ok(hardResult.earnedWeight > easyResult.earnedWeight)
   assert.ok(hardResult.weightedPercent >= easyResult.weightedPercent)
   assert.equal(calculateResult({ [hard.id]: hard.answer }, 10).iqStyleIndex, calculateResult({ [hard.id]: hard.answer }, 3000).iqStyleIndex)
+})
+
+test('all quantitative questions have native math notation and independently checked answers', () => {
+  const expected = ['23', '36', '9', '2/3', '27', '10', '108', '1/6', '28', '11', '24', '225', '25', '20', '120', '13/18', '24', '32', '10', '35']
+  const items = questions.filter(q => q.section === 'numbers')
+  assert.deepEqual(items.map(q => q.answer), expected)
+  for (const q of items) {
+    assert.ok(q.math?.startsWith('<math xmlns="http://www.w3.org/1998/Math/MathML" display="block">'))
+    assert.ok(q.math?.endsWith('</math>'))
+    if (q.optionMath) {
+      assert.equal(q.optionMath.length, 4)
+      assert.ok(q.optionMath.every(item => item.includes('<math') && item.includes('</math>')))
+    }
+  }
+})
+
+test('pixel grids are valid, choices distinct, and transformations preserve geometry', () => {
+  const pixelItems = questions.filter(q => q.pixel)
+  assert.equal(pixelItems.length, 11)
+  for (const q of pixelItems) {
+    const pixel = q.pixel!
+    assert.equal(pixel.optionGrids.length, 4)
+    assert.equal(new Set(pixel.optionGrids).size, 4, q.id)
+    assert.ok(pixel.panels.includes('?'))
+    assert.ok(pixel.optionGrids[q.options.indexOf(q.answer)])
+    for (const grid of [...pixel.panels.filter(panel => panel !== '?'), ...pixel.optionGrids]) {
+      assert.match(grid, /^[.#]{5}(\/[.#]{5}){4}$/, q.id)
+    }
+  }
+  const sample = '##.../#..../#..../...../.....'
+  assert.equal(rotateGrid(rotateGrid(rotateGrid(rotateGrid(sample)))), sample)
+  assert.equal(reflectGrid(reflectGrid(sample)), sample)
+  assert.equal(overlayGrids(sample, sample), sample)
+  assert.equal(xorGrids(sample, sample), '...../...../...../...../.....')
+})
+
+test('pixel answer keys match the rule stated in each prompt', () => {
+  const byId = Object.fromEntries(questions.filter(q => q.pixel).map(q => [q.id, q]))
+  const correctGrid = (id: string) => {
+    const q = byId[id]!
+    return q.pixel!.optionGrids[q.options.indexOf(q.answer)]
+  }
+  const panels = (id: string) => byId[id]!.pixel!.panels
+  const turn = (grid: string, count = 1) => Array.from({ length: count }).reduce<string>(value => rotateGrid(value), grid)
+  assert.equal(correctGrid('patterns-16'), turn(panels('patterns-16')[0]!, 3))
+  assert.equal(correctGrid('patterns-17'), xorGrids(panels('patterns-17')[3]!, panels('patterns-17')[4]!))
+  assert.equal(correctGrid('patterns-19'), reflectGrid(panels('patterns-19')[2]!))
+  assert.equal(correctGrid('spatial-01'), turn(panels('spatial-01')[0]!))
+  assert.equal(correctGrid('spatial-02'), reflectGrid(panels('spatial-02')[0]!))
+  assert.equal(correctGrid('spatial-05'), overlayGrids(panels('spatial-05')[0]!, panels('spatial-05')[1]!))
+  assert.equal(correctGrid('spatial-08'), turn(panels('spatial-08')[2]!))
+  assert.equal(correctGrid('spatial-10'), xorGrids(panels('spatial-10')[0]!, panels('spatial-10')[1]!))
+  assert.equal(correctGrid('spatial-12'), overlayGrids(panels('spatial-12')[0]!, panels('spatial-12')[1]!))
+  assert.equal(correctGrid('spatial-15'), turn(reflectGrid(panels('spatial-15')[0]!)))
+  assert.equal(correctGrid('spatial-17'), turn(panels('spatial-17')[2]!))
 })
