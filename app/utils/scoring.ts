@@ -37,9 +37,9 @@ export function isCorrect(question: Question, response: string | undefined): boo
   return response === question.answer
 }
 
-export function calculateResult(answers: Answers, elapsedSeconds: number): TestResult {
+export function calculateResult(answers: Answers, elapsedSeconds: number, selectedQuestions: Question[] = questions, durationSeconds = TEST_DURATION_SECONDS): TestResult {
   const sectionResults = sections.map(section => {
-    const items = questions.filter(question => question.section === section.id)
+    const items = selectedQuestions.filter(question => question.section === section.id)
     const maxWeight = items.reduce((sum, question) => sum + weightFor(question), 0)
     const earnedWeight = items.reduce((sum, question) => sum + (isCorrect(question, answers[question.id]) ? weightFor(question) : 0), 0)
     return {
@@ -50,25 +50,25 @@ export function calculateResult(answers: Answers, elapsedSeconds: number): TestR
       total: items.length,
       earnedWeight,
       maxWeight,
-      percent: Math.round(100 * earnedWeight / maxWeight)
+      percent: maxWeight ? Math.round(100 * earnedWeight / maxWeight) : 0
     }
   })
   const earnedWeight = sectionResults.reduce((sum, section) => sum + section.earnedWeight, 0)
   const maxWeight = sectionResults.reduce((sum, section) => sum + section.maxWeight, 0)
-  const chanceWeight = questions.reduce((sum, question) => sum + (question.kind === 'choice' ? weightFor(question) / question.options.length : 0), 0)
-  const adjusted = Math.max(0, Math.min(1, (earnedWeight - chanceWeight) / (maxWeight - chanceWeight)))
+  const chanceWeight = selectedQuestions.reduce((sum, question) => sum + (question.kind === 'choice' ? weightFor(question) / question.options.length : 0), 0)
+  const adjusted = maxWeight > chanceWeight ? Math.max(0, Math.min(1, (earnedWeight - chanceWeight) / (maxWeight - chanceWeight))) : 0
 
   return {
     correct: sectionResults.reduce((sum, section) => sum + section.correct, 0),
     answered: sectionResults.reduce((sum, section) => sum + section.answered, 0),
-    total: questions.length,
+    total: selectedQuestions.length,
     earnedWeight,
     maxWeight,
-    weightedPercent: Math.round(100 * earnedWeight / maxWeight),
+    weightedPercent: maxWeight ? Math.round(100 * earnedWeight / maxWeight) : 0,
     chanceAdjustedPercent: Math.round(100 * adjusted),
     // A transparent, bounded display index. It is not a normed or clinical IQ score.
     iqStyleIndex: Math.round(65 + 80 * Math.pow(adjusted, 0.85)),
-    elapsedSeconds: Math.max(0, Math.min(TEST_DURATION_SECONDS, Math.round(elapsedSeconds))),
+    elapsedSeconds: Math.max(0, Math.min(durationSeconds, Math.round(elapsedSeconds))),
     sections: sectionResults
   }
 }

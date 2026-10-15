@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { questions, sections, rotateGrid, reflectGrid, overlayGrids, xorGrids } from '../app/data/questions.ts'
+import { isTestVersionId, questionsForVersion, testVersions } from '../app/data/testVersions.ts'
 import { calculateResult, formatTime, isCorrect, TEST_DURATION_SECONDS } from '../app/utils/scoring.ts'
 
 test('the bank contains 100 distinct, answerable questions in five equal parts', () => {
@@ -122,4 +123,43 @@ test('pixel answer keys match the rule stated in each prompt', () => {
   assert.equal(correctGrid('spatial-12'), overlayGrids(panels('spatial-12')[0]!, panels('spatial-12')[1]!))
   assert.equal(correctGrid('spatial-15'), turn(reflectGrid(panels('spatial-15')[0]!)))
   assert.equal(correctGrid('spatial-17'), turn(panels('spatial-17')[2]!))
+})
+
+test('each version has balanced domains, difficulty levels, and a fixed duration', () => {
+  assert.deepEqual(testVersions.map(version => [version.id, version.durationSeconds]), [['20', 900], ['50', 2100], ['100', 3600]])
+  assert.ok(isTestVersionId('20'))
+  assert.ok(!isTestVersionId('40'))
+  for (const version of testVersions) {
+    const selected = questionsForVersion(version.id)
+    assert.equal(selected.length, Number(version.id))
+    assert.equal(new Set(selected.map(question => question.id)).size, selected.length)
+    for (const section of sections) {
+      const part = selected.filter(question => question.section === section.id)
+      assert.equal(part.length, selected.length / sections.length)
+      assert.deepEqual(new Set(part.map(question => question.difficulty)), new Set([1, 2, 3]))
+    }
+  }
+  assert.deepEqual(questionsForVersion('100').map(question => question.id), questions.map(question => question.id))
+})
+
+test('short-version scoring ignores questions outside the selected version', () => {
+  for (const version of testVersions) {
+    const selected = questionsForVersion(version.id)
+    const selectedIds = new Set(selected.map(question => question.id))
+    const outsider = questions.find(question => !selectedIds.has(question.id))
+    const answers = Object.fromEntries(selected.map(question => [question.id, question.answer]))
+    const full = calculateResult(answers, version.durationSeconds + 200, selected, version.durationSeconds)
+    assert.equal(full.total, selected.length)
+    assert.equal(full.correct, selected.length)
+    assert.equal(full.weightedPercent, 100)
+    assert.equal(full.iqStyleIndex, 145)
+    assert.equal(full.elapsedSeconds, version.durationSeconds)
+    assert.ok(full.sections.every(section => section.correct === section.total && section.percent === 100))
+    if (outsider) {
+      const outsiderOnly = calculateResult({ [outsider.id]: outsider.answer }, 10, selected, version.durationSeconds)
+      assert.equal(outsiderOnly.correct, 0)
+      assert.equal(outsiderOnly.answered, 0)
+      assert.equal(outsiderOnly.iqStyleIndex, 65)
+    }
+  }
 })

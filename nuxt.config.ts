@@ -7,7 +7,7 @@ export default defineNuxtConfig({
     head: {
       title: 'IQ Lab — Challenge your thinking',
       meta: [
-        { name: 'description', content: '100 original questions across five cognitive domains. Take the free timed challenge and explore your results.' },
+        { name: 'description', content: 'Choose 20, 50, or 100 questions across five cognitive domains. Take the free timed challenge and explore your results.' },
         { name: 'theme-color', content: '#14243c' }
       ],
       link: [
